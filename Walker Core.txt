@@ -314,6 +314,7 @@ default {
 
             // Start listening on main channel
             listener = llListen(channel, "", NULL_KEY, "");
+            llOwnerSay("DEBUG: Core listening on channel " + (string)channel);
             llOwnerSay("✅ Ready! Type /" + (string)channel + " help for commands.");
         }
     }
@@ -323,6 +324,11 @@ default {
     }
     
     listen(integer chan, string name, key id, string msg) {
+        // DEBUG: Log all messages on main channel
+        if (chan == channel) {
+            llOwnerSay("DEBUG: Core received on channel " + (string)chan + ": " + msg);
+        }
+
         // Path name setup
         if (chan == setupChannel && pathName == "" && id == owner) {
             pathName = msg;
@@ -472,6 +478,7 @@ default {
         if (name == hudObject) {
             // Send config to HUD
             string hudData = "hudConfig:channel=" + (string)channel + ";pathName=" + pathName;
+            llOwnerSay("DEBUG: Sending to HUD: channel=" + (string)channel + ", path=" + pathName);
             llRegionSayTo(id, 0, hudData);
 
             // Transfer PathData if exists
