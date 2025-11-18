@@ -1,0 +1,170 @@
+// Panel v2.0 - Walker Control Panel
+// Provides touch-based controls for walker system
+
+integer channel = -1;
+string pathName = "";
+integer accessMode = 0;
+list adminList = [];
+
+integer dialogChannel;
+key lastUser;
+string pendingDialog = "";
+integer deleteInitiated = FALSE;
+
+list mainButtons = ["Start", "Stop", "Home", "Configure"];
+
+integer isAllowed(key id) {
+    key owner = llGetOwner();
+    if (accessMode == 2) return TRUE; // Public
+    if (id == owner) return TRUE; // Owner always allowed
+    if (accessMode == 1 && llSameGroup(id)) return TRUE; // Group
+    if (accessMode == 3) {
+        // Check admin list
+        integer i;
+        for (i = 0; i < llGetListLength(adminList); i++) {
+            if (id == llList2Key(adminList, i)) return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+default {
+    state_entry() {
+        llSetText("Walker Panel\n(Waiting for config...)", <1,1,1>, 1.0);
+    }
+    
+    on_rez(integer param) {
+        // Listen for Core configuration
+        llListen(0, "", NULL_KEY, "");
+        llSetTimerEvent(10.0); // Stop listening after 10s
+    }
+    
+    listen(integer chan, string name, key id, string msg) {
+        // Receive configuration from Core
+        if (chan == 0 && llSubStringIndex(msg, "panelConfig:") == 0) {
+            string config = llGetSubString(msg, 12, -1);
+            list tokens = llParseString2List(config, [";", "="], []);
+            integer i;
+            for (i = 0; i < llGetListLength(tokens); i += 2) {
+                string k = llList2String(tokens, i);
+                string val = llList2String(tokens, i + 1);
+                
+                if (k == "channel") channel = (integer)val;
+                else if (k == "pathName") pathName = val;
+                else if (k == "access") accessMode = (integer)val;
+            }
+            
+            llSetText("Walker Panel\n" + pathName + "\nChannel: /" + (string)channel, <0,1,0>, 1.0);
+            llListen(channel, "", NULL_KEY, "");
+            llSetTimerEvent(0.0); // Stop config timeout
+            return;
+        }
+        
+        // Dialog responses
+        if (chan == dialogChannel && id == lastUser) {
+            string lower = llToLower(msg);
+            
+            // Main menu responses
+            if (lower == "start") {
+                llRegionSay(channel, "start");
+                llRegionSayTo(id, 0, "▶️ Walker started");
+            }
+            else if (lower == "stop") {
+                llRegionSay(channel, "stop");
+                llRegionSayTo(id, 0, "⏸️ Walker stopped");
+            }
+            else if (lower == "home") {
+                llRegionSay(channel, "home");
+                llRegionSayTo(id, 0, "🏠 Walker returning home");
+            }
+            else if (lower == "configure" && id == llGetOwner()) {
+                // Show configure menu
+                dialogChannel = -900000 + (integer)(llFrand(100000.0));
+                llListen(dialogChannel, "", id, "");
+                llDialog(id, "⚙️ Panel Configuration:", 
+                    ["Delete System", "Set Permissions", "Cancel"], 
+                    dialogChannel);
+            }
+            
+            // Configure menu responses
+            else if (msg == "Delete System" && id == llGetOwner()) {
+                // First confirmation
+                pendingDialog = "delete_confirm";
+                dialogChannel = -900000 + (integer)(llFrand(100000.0));
+                llListen(dialogChannel, "", id, "");
+                
+                llDialog(id, 
+                    "⚠️ DELETE ENTIRE SYSTEM?\n\n" +
+                    "This will permanently remove:\n" +
+                    "• Core (and ALL linked beacons)\n" +
+                    "• Walker\n" +
+                    "• Panel (this object)\n" +
+                    "• HUD (will detach)\n\n" +
+                    "Path data will be exported to chat.\n\n" +
+                    "THIS CANNOT BE UNDONE.\n\n" +
+                    "Are you sure?", 
+                    ["YES", "NO"], 
+                    dialogChannel
+                );
+            }
+            
+            else if (msg == "YES" && pendingDialog == "delete_confirm") {
+                llRegionSayTo(id, 0, "✅ Deletion confirmed. Exporting path data...");
+                
+                // Request path export & deletion from Core
+                llRegionSay(channel, "systemDelete:" + (string)id);
+                
+                // Wait 5 seconds for Core to export, then delete
+                llSetTimerEvent(5.0);
+                deleteInitiated = TRUE;
+                pendingDialog = "";
+            }
+            
+            else if (msg == "NO" || msg == "Cancel") {
+                llRegionSayTo(id, 0, "❌ Action cancelled.");
+                pendingDialog = "";
+            }
+        }
+        
+        // Component delete command from Core
+        if (chan == channel && msg == "componentDelete") {
+            llRegionSayTo(llGetOwner(), 0, "🗑️ Panel deleting...");
+            llSleep(0.5);
+            llDie();
+        }
+    }
+    
+    touch_start(integer total) {
+        key who = llDetectedKey(0);
+        
+        if (!isAllowed(who)) {
+            llRegionSayTo(who, 0, "⛔ You don't have permission to control this panel.");
+            return;
+        }
+        
+        lastUser = who;
+        dialogChannel = -900000 + (integer)(llFrand(100000.0));
+        llListen(dialogChannel, "", lastUser, "");
+        
+        llDialog(lastUser, 
+            "🎛️ Walker Control Panel\nPath: " + pathName, 
+            mainButtons, 
+            dialogChannel
+        );
+        
+        llSetTimerEvent(30.0); // Dialog timeout
+    }
+    
+    timer() {
+        if (deleteInitiated) {
+            llDie();
+        } else {
+            // Dialog timeout
+            llSetTimerEvent(0.0);
+        }
+    }
+    
+    changed(integer change) {
+        if (change & CHANGED_OWNER) llResetScript();
+    }
+}

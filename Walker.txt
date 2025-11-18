@@ -1,0 +1,98 @@
+// Walker v2.0 - Mobile Unit (Phase 1 Skeleton)
+// Receives configuration, handles delete command
+// Full keyframe motion implementation in Phase 3
+
+integer channel = -1;
+string pathName = "";
+float speed = 1.5;
+string forwardAxis = "Z"; // Default, read from description
+
+integer moving = FALSE;
+list waypoints = [];
+key followedAvatar = NULL_KEY;
+
+default {
+    state_entry() {
+        // Read forward axis from description
+        string desc = llGetObjectDesc();
+        if (llSubStringIndex(desc, "X") != -1) forwardAxis = "X";
+        else if (llSubStringIndex(desc, "Y") != -1) forwardAxis = "Y";
+        else if (llSubStringIndex(desc, "Z") != -1) forwardAxis = "Z";
+        
+        llSetText("Walker (awaiting config...)", <1,1,0>, 1.0);
+    }
+    
+    on_rez(integer param) {
+        // Listen for Core configuration
+        llListen(0, "", NULL_KEY, "");
+        llSetTimerEvent(10.0);
+    }
+    
+    listen(integer chan, string name, key id, string msg) {
+        // Receive configuration from Core
+        if (chan == 0 && llSubStringIndex(msg, "walkerConfig:") == 0) {
+            string config = llGetSubString(msg, 13, -1);
+            list tokens = llParseString2List(config, [";", "="], []);
+            integer i;
+            for (i = 0; i < llGetListLength(tokens); i += 2) {
+                string k = llList2String(tokens, i);
+                string val = llList2String(tokens, i + 1);
+                
+                if (k == "channel") channel = (integer)val;
+                else if (k == "pathName") pathName = val;
+                else if (k == "speed") speed = (float)val;
+            }
+            
+            llSetText("Walker: " + pathName + "\nReady on /" + (string)channel, <0,1,0>, 1.0);
+            llListen(channel, "", NULL_KEY, "");
+            llSetTimerEvent(0.0);
+            llOwnerSay("🟢 Walker configured: " + pathName + " @ " + (string)speed + " m/s (axis: " + forwardAxis + ")");
+            return;
+        }
+        
+        // Main commands
+        if (chan == channel) {
+            string lower = llToLower(msg);
+            
+            if (lower == "start") {
+                llRegionSayTo(llGetOwner(), 0, "▶️ Walker starting... (Phase 3: full motion)");
+                moving = TRUE;
+            }
+            
+            else if (lower == "stop") {
+                llRegionSayTo(llGetOwner(), 0, "⏸️ Walker stopped");
+                moving = FALSE;
+                followedAvatar = NULL_KEY;
+            }
+            
+            else if (lower == "home") {
+                llRegionSayTo(llGetOwner(), 0, "🏠 Walker returning home... (Phase 3: full motion)");
+                followedAvatar = NULL_KEY;
+            }
+            
+            else if (llSubStringIndex(msg, "speedUpdate:") == 0) {
+                speed = (float)llGetSubString(msg, 12, -1);
+                llRegionSayTo(llGetOwner(), 0, "🚀 Walker speed updated: " + (string)speed + " m/s");
+            }
+            
+            // Component delete command
+            else if (msg == "componentDelete") {
+                // CRITICAL: Stop keyframes before dying
+                llSetKeyframedMotion([], [KFM_COMMAND, KFM_CMD_STOP]);
+                llSetKeyframedMotion([], []); // Full reset
+                
+                llRegionSayTo(llGetOwner(), 0, "🗑️ Walker deleting...");
+                llSleep(0.5);
+                llDie();
+            }
+        }
+    }
+    
+    timer() {
+        llSetTimerEvent(0.0);
+    }
+    
+    changed(integer change) {
+        if (change & CHANGED_OWNER) llResetScript();
+    }
+}

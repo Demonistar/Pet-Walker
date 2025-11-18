@@ -1,0 +1,55 @@
+// Beacon v2.0 - Self-Deleting Waypoint Marker
+// Configures itself on rez, provides visual feedback, deletes script after linking
+
+integer beaconNum = 0;
+integer listenHandle;
+
+default {
+    on_rez(integer param) {
+        beaconNum = param;
+        
+        // Setup appearance
+        llSetColor(<1,0,0>, ALL_SIDES);
+        llSetLinkPrimitiveParamsFast(LINK_THIS, [
+            PRIM_GLOW, ALL_SIDES, 0.25,
+            PRIM_PHANTOM, TRUE
+        ]);
+        
+        // Listen for HUD configuration on beacon channel
+        listenHandle = llListen(-999999, "", NULL_KEY, "");
+        llSetTimerEvent(15.0); // Timeout if no config
+    }
+    
+    listen(integer chan, string name, key id, string msg) {
+        // Receive path name from HUD
+        if (llSubStringIndex(msg, "config:") == 0) {
+            string pathName = llGetSubString(msg, 7, -1);
+            llSetObjectName(pathName + "_" + (string)beaconNum);
+            llOwnerSay("✅ Beacon " + (string)beaconNum + " configured: " + pathName + "_" + (string)beaconNum);
+        }
+        
+        // Receive link confirmation from HUD
+        else if (msg == "linked:" + (string)beaconNum) {
+            // Turn off glow, change to green
+            llSetLinkPrimitiveParamsFast(LINK_THIS, [PRIM_GLOW, ALL_SIDES, 0.0]);
+            llSetColor(<0,1,0>, ALL_SIDES);
+            
+            // Clean up
+            llListenRemove(listenHandle);
+            llSetTimerEvent(0.0);
+            
+            // Self-destruct script - we're done!
+            llRemoveInventory(llGetScriptName());
+        }
+    }
+    
+    timer() {
+        // Timeout - turn yellow (waiting for link)
+        llSetColor(<1,1,0>, ALL_SIDES);
+        llSetTimerEvent(0.0);
+    }
+    
+    changed(integer change) {
+        if (change & CHANGED_OWNER) llResetScript();
+    }
+}

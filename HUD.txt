@@ -1,0 +1,161 @@
+// HUD v2.0.1 (patch)
+// 2025-10-28 - Button name fix; constants; messaging via llRegionSayTo - Beacon Placement Controller
+key owner;
+integer channel = -1;
+string pathName = "";
+integer pathDataReceived = FALSE;
+string loadedPathName = "";
+list loadedWaypoints = [];
+float loadedSpeed = 1.5;
+integer notecardLine = 0;
+key notecardKey;
+integer waypointSectionActive = FALSE;
+integer dialogChannel;
+integer deleteMode = FALSE;
+
+integer placementActive = FALSE;
+integer beaconCount = 0;
+list pendingBeacons = [];
+
+default {
+    state_entry() {
+        owner = llGetOwner();
+        llSetText("HUD Initializing...", <1,1,0>, 1.0);
+    }
+    
+    on_rez(integer param) {
+        llListen(0, "", NULL_KEY, "");
+        llSetTimerEvent(10.0);
+    }
+    
+    listen(integer chan, string name, key id, string msg) {
+        if (chan == 0 && llSubStringIndex(msg, "hudConfig:") == 0) {
+            string config = llGetSubString(msg, 10, -1);
+            list tokens = llParseString2List(config, [";", "="], []);
+            integer i;
+            for (i = 0; i < llGetListLength(tokens); i += 2) {
+                string k = llList2String(tokens, i);
+                string val = llList2String(tokens, i + 1);
+                if (k == "channel") channel = (integer)val;
+                else if (k == "pathName") pathName = val;
+            }
+            llSetText("HUD: " + pathName, <0,1,0>, 1.0);
+            llRegionSayTo(owner, 0, "HUD configured");
+            llRequestPermissions(owner, PERMISSION_ATTACH | PERMISSION_CHANGE_LINKS);
+            llSetTimerEvent(0.0);
+        }
+        if (chan == dialogChannel) {
+            if (msg == "AUTO-RESTORE") {
+                llRegionSayTo(owner, 0, "Phase 2 feature");
+            }
+            else if (msg == "MANUAL SETUP") {
+                loadedWaypoints = [];
+                pathDataReceived = FALSE;
+            }
+        }
+        if (chan == channel && msg == "componentDelete") {
+            deleteMode = TRUE;
+            if (llGetAttached()) {
+                llRequestPermissions(owner, PERMISSION_ATTACH);
+            } else {
+                llDie();
+            }
+        }
+    }
+    
+    touch_start(integer num) {
+        integer link = llDetectedLinkNumber(0);
+        string linkName = llGetLinkName(link);
+        
+        llRegionSayTo(owner, 0, "DEBUG: Touched link " + (string)link + " named: " + linkName);
+        
+        if (linkName == "btn_start") {
+            placementActive = TRUE;
+            beaconCount = 0;
+            pendingBeacons = [];
+            llRegionSayTo(owner, 0, "Beacon placement started. Press Place at each waypoint.");
+        }
+        else if (linkName == "btn_place" && placementActive) {
+            beaconCount++;
+            vector pos = llGetPos();
+            llRegionSayTo(owner, 0, "DEBUG: Attempting to rez at " + (string)pos);
+            llRezObject("Beacon", pos, ZERO_VECTOR, ZERO_ROTATION, beaconCount);
+            llRegionSayTo(owner, 0, "Beacon " + (string)beaconCount + " placed");
+        }
+        else if (linkName == "btn_finish" && placementActive) {
+            placementActive = FALSE;
+            llRegionSayTo(owner, 0, "Placement finished. " + (string)beaconCount + " beacons placed.");
+        }
+    }
+    
+    run_time_permissions(integer perm) {
+        if (perm & PERMISSION_ATTACH) {
+            if (deleteMode) {
+                llDetachFromAvatar();
+                llDie();
+            } else {
+                llAttachToAvatarTemp(ATTACH_HUD_TOP_RIGHT);
+                llSetPos(<0.00999, 0.17470, -0.50000>);
+                llSetRot(llEuler2Rot(<0, 0, 90> * DEG_TO_RAD));
+            }
+        }
+    }
+    
+    changed(integer change) {
+        if (change & CHANGED_INVENTORY) {
+            if (llGetInventoryType("PathData") == INVENTORY_NOTECARD) {
+                pathDataReceived = TRUE;
+                notecardLine = 0;
+                notecardKey = llGetNotecardLine("PathData", notecardLine);
+            }
+        }
+        if (change & CHANGED_OWNER) llResetScript();
+    }
+    
+    dataserver(key query_id, string data) {
+        if (query_id == notecardKey) {
+            if (data != EOF) {
+                if (data != "" && llGetSubString(data, 0, 0) != "#") {
+                    if (llSubStringIndex(data, "PathName:") == 0) {
+                        loadedPathName = llGetSubString(data, 9, -1);
+                    }
+                    else if (llSubStringIndex(data, "Speed:") == 0) {
+                        loadedSpeed = (float)llGetSubString(data, 6, -1);
+                    }
+                    else if (llSubStringIndex(data, "---WAYPOINTS---") == 0) {
+                        waypointSectionActive = TRUE;
+                    }
+                    else if (llSubStringIndex(data, "---END---") == 0) {
+                        waypointSectionActive = FALSE;
+                    }
+                    else if (waypointSectionActive) {
+                        list parts = llParseString2List(data, [","], []);
+                        if (llGetListLength(parts) == 4) {
+                            float x = (float)llList2String(parts, 0);
+                            float y = (float)llList2String(parts, 1);
+                            float z = (float)llList2String(parts, 2);
+                            vector pos = <x, y, z>;
+                            float rot = (float)llList2String(parts, 3);
+                            loadedWaypoints += [pos, rot];
+                        }
+                    }
+                }
+                notecardLine++;
+                notecardKey = llGetNotecardLine("PathData", notecardLine);
+            } else {
+                dialogChannel = -8889 + (integer)llFrand(10000);
+                llListen(dialogChannel, "", owner, "");
+                llDialog(owner, "Path loaded", ["AUTO-RESTORE", "MANUAL SETUP"], dialogChannel);
+            }
+        }
+    }
+    
+    object_rez(key id) {
+        pendingBeacons += [id];
+        llRegionSayTo(id, -999999, "config:" + pathName);
+    }
+    
+    timer() {
+        llSetTimerEvent(0.0);
+    }
+}

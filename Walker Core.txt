@@ -1,0 +1,381 @@
+// Core v2.0 - Walker System Brain
+// Handles initialization, channel calculation, LinkSetData storage, component rezzing
+
+// ========== GLOBAL VARIABLES ==========
+key owner;
+integer channel = -1;
+string pathName = "";
+float speedOverride = 1.5; // Default walking speed
+integer accessMode = 0; // 0=Owner, 1=Group, 2=Public, 3=Admin
+list adminList = [];
+
+integer setupChannel = 99;
+integer listener = 0;
+integer dialogChannel;
+
+integer pathDataDetected = FALSE;
+integer hudNeedsNC = FALSE;
+integer deleteInitiated = FALSE;
+
+string hudObject = "HUD";
+string panelObject = "Panel";
+string walkerObject = "Walker";
+
+// ========== LINKSETDATA FUNCTIONS ==========
+initLinkSetData() {
+    // Calculate unique channel from UUID
+    string uuid = llGetKey();
+    integer hash = (integer)("0x" + llGetSubString(uuid, 0, 7));
+    channel = -1000000 - llAbs(hash);
+    
+    // Store in LinkSetData
+    llLinksetDataWrite("channel", (string)channel);
+    llLinksetDataWrite("speed", (string)speedOverride);
+    llLinksetDataWrite("accessMode", (string)accessMode);
+    
+    llOwnerSay("✅ Channel calculated: /" + (string)channel);
+}
+
+loadLinkSetData() {
+    string chanStr = llLinksetDataRead("channel");
+    if (chanStr != "") channel = (integer)chanStr;
+    
+    string nameStr = llLinksetDataRead("pathName");
+    if (nameStr != "") pathName = nameStr;
+    
+    string speedStr = llLinksetDataRead("speed");
+    if (speedStr != "") speedOverride = (float)speedStr;
+    
+    string accessStr = llLinksetDataRead("accessMode");
+    if (accessStr != "") accessMode = (integer)accessStr;
+    
+    string adminStr = llLinksetDataRead("adminList");
+    if (adminStr != "") adminList = llCSV2List(adminStr);
+}
+
+saveLinkSetData() {
+    llLinksetDataWrite("channel", (string)channel);
+    llLinksetDataWrite("pathName", pathName);
+    llLinksetDataWrite("speed", (string)speedOverride);
+    llLinksetDataWrite("accessMode", (string)accessMode);
+    if (llGetListLength(adminList) > 0) {
+        llLinksetDataWrite("adminList", llList2CSV(adminList));
+    }
+}
+
+// ========== HELPER FUNCTIONS ==========
+integer isAdmin(key id) {
+    if (id == owner) return TRUE;
+    if (accessMode == 2) return TRUE;
+    if (accessMode == 1 && llSameGroup(id)) return TRUE;
+    if (accessMode == 3) {
+        integer i;
+        for (i = 0; i < llGetListLength(adminList); i++) {
+            if (id == llList2Key(adminList, i)) return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+showHelp(key id) {
+    string prefix = "/" + (string)channel + " ";
+    llRegionSayTo(id, 0,
+        "📘 Walker Core v2.0 Commands:\n" +
+        prefix + "help — Show this menu\n" +
+        prefix + "set speed <0.5-5.0> — Set walker speed\n" +
+        prefix + "set access owner/group/public/admin — Set permissions\n" +
+        prefix + "rez hud — Rez HUD for beacon placement\n" +
+        prefix + "rez panel — Rez control panel\n" +
+        prefix + "rez walker — Rez walker (after path setup)\n" +
+        prefix + "show/hide — Toggle beacon visibility\n" +
+        prefix + "delete — Remove entire system (exports path)"
+    );
+}
+
+// ========== PATH EXPORT (for deletion) ==========
+string formatFloat(float f, integer decimals) {
+    string str = (string)f;
+    integer dotPos = llSubStringIndex(str, ".");
+    if (dotPos == -1) return str + ".0000";
+    return llGetSubString(str, 0, dotPos + decimals);
+}
+
+string formatVector(vector v) {
+    return formatFloat(v.x, 4) + ", " + formatFloat(v.y, 4) + ", " + formatFloat(v.z, 4);
+}
+
+list chunkString(string input, integer chunkSize) {
+    list chunks = [];
+    integer len = llStringLength(input);
+    integer pos = 0;
+    
+    while (pos < len) {
+        chunks += [llGetSubString(input, pos, pos + chunkSize - 1)];
+        pos += chunkSize;
+    }
+    
+    return chunks;
+}
+
+string exportPathData() {
+    string output = "=====WALKER PATH DATA=====\n";
+    output += "PathName: " + pathName + "\n";
+    output += "Channel: " + (string)channel + "\n";
+    output += "Speed: " + (string)speedOverride + "\n";
+    output += "AccessMode: " + (string)accessMode + "\n";
+    output += "Generated: " + llGetDate() + " " + llGetTimestamp() + "\n";
+    
+    if (accessMode == 3 && llGetListLength(adminList) > 0) {
+        output += "AdminList: " + llList2CSV(adminList) + "\n";
+    }
+    
+    output += "---WAYPOINTS---\n";
+    
+    // Scan all linked beacons
+    list beaconData = [];
+    integer i;
+    for (i = 2; i <= llGetNumberOfPrims(); i++) {
+        string linkName = llGetLinkName(i);
+        
+        if (llSubStringIndex(linkName, pathName + "_") == 0) {
+            list parts = llParseString2List(linkName, ["_"], []);
+            integer num = (integer)llList2String(parts, -1);
+            
+            vector pos = llList2Vector(
+                llGetLinkPrimitiveParams(i, [PRIM_POSITION]), 0
+            );
+            
+            beaconData += [num, pos];
+        }
+    }
+    
+    // Sort by beacon number
+    beaconData = llListSort(beaconData, 2, TRUE);
+    
+    // Format: X, Y, Z, Rotation
+    for (i = 0; i < llGetListLength(beaconData); i += 2) {
+        vector pos = llList2Vector(beaconData, i + 1);
+        
+        // Calculate rotation to next point
+        float rot = 0.0;
+        if (i + 2 < llGetListLength(beaconData)) {
+            vector nextPos = llList2Vector(beaconData, i + 3);
+            rot = llAtan2(nextPos.y - pos.y, nextPos.x - pos.x);
+        }
+        
+        output += formatVector(pos) + ", " + formatFloat(rot, 4) + "\n";
+    }
+    
+    output += "---END---";
+    
+    return output;
+}
+
+// ========== DEFAULT STATE ==========
+default {
+    state_entry() {
+        owner = llGetOwner();
+        
+        // Try to load existing data
+        loadLinkSetData();
+        
+        if (channel == -1 || channel == 0) {
+            // First time setup
+            llOwnerSay("🛠️ Initializing Walker Core v2.0...");
+            initLinkSetData();
+        } else {
+            llOwnerSay("🔄 Core loaded: Channel /" + (string)channel + ", Path: " + pathName);
+        }
+        
+        // Check for PathData notecard
+        if (llGetInventoryType("PathData") == INVENTORY_NOTECARD) {
+            pathDataDetected = TRUE;
+            llOwnerSay("📋 PathData notecard detected!");
+        }
+        
+        // If no path name yet, ask for one
+        if (pathName == "") {
+            listener = llListen(setupChannel, "", owner, "");
+            llTextBox(owner, 
+                "📝 Enter a name for this walker path:\n(Example: AquariumPath, ForestWalk, etc.)", 
+                setupChannel
+            );
+        } else {
+            // Already configured, just start listening
+            listener = llListen(channel, "", NULL_KEY, "");
+            llOwnerSay("✅ Ready! Type /" + (string)channel + " help for commands.");
+        }
+    }
+    
+    on_rez(integer param) {
+        llResetScript();
+    }
+    
+    listen(integer chan, string name, key id, string msg) {
+        // Path name setup
+        if (chan == setupChannel && pathName == "" && id == owner) {
+            pathName = msg;
+            llLinksetDataWrite("pathName", pathName);
+            
+            llOwnerSay("✅ Path name set to: " + pathName);
+            
+            // Start listening on main channel
+            if (listener) llListenRemove(listener);
+            listener = llListen(channel, "", NULL_KEY, "");
+            
+            llOwnerSay("✅ Ready! Type /" + (string)channel + " help for commands.");
+            return;
+        }
+        
+        // Main commands
+        if (chan != channel) return;
+        if (!isAdmin(id)) {
+            llRegionSayTo(id, 0, "⛔ You don't have permission to control this system.");
+            return;
+        }
+        
+        string lower = llToLower(msg);
+        
+        if (lower == "help") {
+            showHelp(id);
+        }
+        
+        else if (llSubStringIndex(lower, "set speed ") == 0) {
+            float spd = (float)llGetSubString(lower, 10, -1);
+            if (spd < 0.5 || spd > 5.0) {
+                llRegionSayTo(id, 0, "⚠️ Speed must be between 0.5 and 5.0 m/s");
+            } else {
+                speedOverride = spd;
+                saveLinkSetData();
+                llRegionSay(channel, "speedUpdate:" + (string)speedOverride);
+                llRegionSayTo(id, 0, "✅ Speed set to " + (string)speedOverride + " m/s");
+            }
+        }
+        
+        else if (llSubStringIndex(lower, "set access ") == 0) {
+            string mode = llGetSubString(lower, 11, -1);
+            if (mode == "owner") accessMode = 0;
+            else if (mode == "group") accessMode = 1;
+            else if (mode == "public") accessMode = 2;
+            else if (mode == "admin") accessMode = 3;
+            else {
+                llRegionSayTo(id, 0, "⚠️ Invalid mode. Use: owner, group, public, or admin");
+                return;
+            }
+            saveLinkSetData();
+            llRegionSayTo(id, 0, "🔒 Access mode set to: " + mode);
+        }
+        
+        else if (lower == "rez hud") {
+            if (id != owner) {
+                llRegionSayTo(id, 0, "⛔ Only the owner can rez the HUD.");
+                return;
+            }
+            
+            vector rezPos = llGetRootPosition() + <0, 0, 0.5>;
+            
+            // Check if PathData exists
+            if (llGetInventoryType("PathData") == INVENTORY_NOTECARD) {
+                llOwnerSay("📋 PathData detected - will transfer to HUD for auto-restore...");
+                hudNeedsNC = TRUE;
+            }
+            
+            llRezObject(hudObject, rezPos, ZERO_VECTOR, ZERO_ROTATION, 0);
+        }
+        
+        else if (lower == "rez panel") {
+            vector rezPos = llGetRootPosition() + <0, 1, 0.5>;
+            llRezObject(panelObject, rezPos, ZERO_VECTOR, ZERO_ROTATION, 0);
+        }
+        
+        else if (lower == "rez walker") {
+            vector rezPos = llGetRootPosition() + <1, 0, 0>;
+            llRezObject(walkerObject, rezPos, ZERO_VECTOR, ZERO_ROTATION, 0);
+        }
+        
+        else if (lower == "show") {
+            llSetLinkAlpha(LINK_ALL_CHILDREN, 1.0, ALL_SIDES);
+            llRegionSayTo(id, 0, "👁️ Beacons visible");
+        }
+        
+        else if (lower == "hide") {
+            llSetLinkAlpha(LINK_ALL_CHILDREN, 0.0, ALL_SIDES);
+            llRegionSayTo(id, 0, "🫥 Beacons hidden");
+        }
+        
+        else if (lower == "reset") {
+            if (id != owner) return;
+            llLinksetDataReset();
+            llOwnerSay("🔄 LinkSetData cleared - resetting...");
+            llResetScript();
+        }
+        
+        else if (llSubStringIndex(msg, "systemDelete:") == 0) {
+            key requester = (key)llGetSubString(msg, 13, -1);
+            
+            if (requester != owner) return;
+            
+            // Export path data
+            llRegionSayTo(requester, 0, "------COPY TO NOTECARD FOR FUTURE RESTORES------");
+            
+            string export = exportPathData();
+            list chunks = chunkString(export, 900);
+            integer i;
+            for (i = 0; i < llGetListLength(chunks); i++) {
+                llRegionSayTo(requester, 0, llList2String(chunks, i));
+                llSleep(0.1);
+            }
+            
+            llRegionSayTo(requester, 0, "------END PATH DATA------");
+            llRegionSayTo(requester, 0, "💾 Save the above to a notecard named 'PathData' for restoration.");
+            
+            // Broadcast delete to components
+            llRegionSay(channel, "componentDelete");
+            
+            // Wait then die
+            llSleep(2.0);
+            llRegionSayTo(requester, 0, "🗑️ Core (and all " + (string)(llGetNumberOfPrims() - 1) + " beacons) deleting now...");
+            
+            llDie();
+        }
+    }
+    
+    object_rez(key id) {
+        string name = llKey2Name(id);
+        
+        if (name == hudObject) {
+            // Send config to HUD
+            string hudData = "hudConfig:channel=" + (string)channel + ";pathName=" + pathName;
+            llRegionSayTo(id, 0, hudData);
+            
+            // Transfer PathData if exists
+            if (hudNeedsNC && llGetInventoryType("PathData") == INVENTORY_NOTECARD) {
+                llGiveInventory(id, "PathData");
+                llOwnerSay("✅ PathData notecard transferred to HUD");
+                hudNeedsNC = FALSE;
+            }
+        }
+        
+        else if (name == panelObject) {
+            // Send config to Panel
+            string panelData = "panelConfig:channel=" + (string)channel + ";pathName=" + pathName + ";access=" + (string)accessMode;
+            llRegionSayTo(id, 0, panelData);
+        }
+        
+        else if (name == walkerObject) {
+            // Send config to Walker
+            string walkerData = "walkerConfig:channel=" + (string)channel + ";pathName=" + pathName + ";speed=" + (string)speedOverride;
+            llRegionSayTo(id, 0, walkerData);
+        }
+    }
+    
+    changed(integer change) {
+        if (change & CHANGED_OWNER) llResetScript();
+        
+        if (change & CHANGED_LINK) {
+            // Beacon was added/removed/moved
+            // TODO: Rebuild path data (Phase 2)
+            llOwnerSay("🔗 Link change detected - path data will auto-update (Phase 2)");
+        }
+    }
+}
