@@ -21,6 +21,12 @@ string hudObject = "HUD";
 string panelObject = "Panel";
 string walkerObject = "Walker";
 
+// Beacon linking state
+integer linkingInProgress = FALSE;
+integer expectedBeaconCount = 0;
+list beaconsToLink = [];
+integer currentLinkIndex = 0;
+
 // ========== LINKSETDATA FUNCTIONS ==========
 initLinkSetData() {
     // Calculate unique channel from UUID
@@ -171,37 +177,129 @@ string exportPathData() {
     return output;
 }
 
+// ========== BEACON LINKING FUNCTIONS ==========
+startBeaconLinking() {
+    linkingInProgress = TRUE;
+    beaconsToLink = [];
+    currentLinkIndex = 0;
+
+    llOwnerSay("🔍 Scanning for beacons with name pattern: " + pathName + "_*");
+
+    // Use sensor to find beacons within 96m
+    llSensor(pathName, "", SCRIPTED, 96.0, PI);
+}
+
+rebuildPathData() {
+    llOwnerSay("📊 Collecting path data from linked beacons...");
+
+    list beaconData = [];
+
+    // Scan all child prims for beacons
+    integer i;
+    for (i = 2; i <= llGetNumberOfPrims(); i++) {
+        string linkName = llGetLinkName(i);
+
+        // Check if it's a beacon
+        if (llSubStringIndex(linkName, pathName + "_") == 0) {
+            // Extract number
+            list parts = llParseString2List(linkName, ["_"], []);
+            integer num = (integer)llList2String(parts, -1);
+
+            // Get position
+            list params = llGetLinkPrimitiveParams(i, [PRIM_POSITION]);
+            vector pos = llList2Vector(params, 0);
+
+            beaconData += [num, pos, i];
+        }
+    }
+
+    // Sort by beacon number (stride=3)
+    beaconData = llListSort(beaconData, 3, TRUE);
+
+    integer waypointCount = llGetListLength(beaconData) / 3;
+    llOwnerSay("📍 Found " + (string)waypointCount + " waypoints");
+
+    if (waypointCount == 0) {
+        llOwnerSay("⚠️ No beacon waypoints found!");
+        return;
+    }
+
+    // Build waypoint list with rotations
+    list waypoints = [];
+    for (i = 0; i < llGetListLength(beaconData); i += 3) {
+        vector pos = llList2Vector(beaconData, i + 1);
+
+        // Calculate rotation to next waypoint
+        float rot = 0.0;
+        if (i + 3 < llGetListLength(beaconData)) {
+            vector nextPos = llList2Vector(beaconData, i + 4);
+            rot = llAtan2(nextPos.y - pos.y, nextPos.x - pos.x);
+        } else {
+            // Last waypoint - rotate towards first for loop
+            vector firstPos = llList2Vector(beaconData, 1);
+            rot = llAtan2(firstPos.y - pos.y, firstPos.x - pos.x);
+        }
+
+        waypoints += [pos, rot];
+    }
+
+    // Format as string for LinkSetData: x,y,z,rot|x,y,z,rot|...
+    string pathData = "";
+    for (i = 0; i < llGetListLength(waypoints); i += 2) {
+        vector pos = llList2Vector(waypoints, i);
+        float rot = llList2Float(waypoints, i + 1);
+
+        if (i > 0) pathData += "|";
+        pathData += (string)pos.x + "," + (string)pos.y + "," + (string)pos.z + "," + (string)rot;
+    }
+
+    // Save to LinkSetData
+    llLinksetDataWrite("pathData", pathData);
+
+    // Broadcast to Walker
+    llRegionSay(channel, "pathUpdate:" + pathData);
+
+    llOwnerSay("✅ Path collected: " + (string)(llGetListLength(waypoints)/2) + " waypoints");
+    llOwnerSay("📍 Walker can now be rezzed with: /" + (string)channel + " rez walker");
+}
+
 // ========== DEFAULT STATE ==========
 default {
     state_entry() {
         owner = llGetOwner();
-        
-        // Try to load existing data
-        loadLinkSetData();
-        
-        if (channel == -1 || channel == 0) {
-            // First time setup
+
+        // Check if LinkSetData exists (fresh rez vs re-rez)
+        string existingName = llLinksetDataRead("pathName");
+
+        if (existingName == "") {
+            // Brand new Core - first time setup
             llOwnerSay("🛠️ Initializing Walker Core v2.0...");
             initLinkSetData();
-        } else {
-            llOwnerSay("🔄 Core loaded: Channel /" + (string)channel + ", Path: " + pathName);
-        }
-        
-        // Check for PathData notecard
-        if (llGetInventoryType("PathData") == INVENTORY_NOTECARD) {
-            pathDataDetected = TRUE;
-            llOwnerSay("📋 PathData notecard detected!");
-        }
-        
-        // If no path name yet, ask for one
-        if (pathName == "") {
+
+            // Check for PathData notecard
+            if (llGetInventoryType("PathData") == INVENTORY_NOTECARD) {
+                pathDataDetected = TRUE;
+                llOwnerSay("📋 PathData notecard detected!");
+            }
+
+            // Ask for path name
             listener = llListen(setupChannel, "", owner, "");
-            llTextBox(owner, 
-                "📝 Enter a name for this walker path:\n(Example: AquariumPath, ForestWalk, etc.)", 
+            llTextBox(owner,
+                "📝 Enter a name for this walker path:\n(Example: AquariumPath, ForestWalk, etc.)",
                 setupChannel
             );
         } else {
-            // Already configured, just start listening
+            // Existing Core being re-rezzed - load saved data
+            loadLinkSetData();
+            llOwnerSay("🔄 Core loaded: Channel /" + (string)channel + ", Path: " + pathName);
+
+            // Check for PathData notecard
+            if (llGetInventoryType("PathData") == INVENTORY_NOTECARD) {
+                pathDataDetected = TRUE;
+                llOwnerSay("📋 PathData notecard detected!");
+            }
+
+            // Start listening on main channel
             listener = llListen(channel, "", NULL_KEY, "");
             llOwnerSay("✅ Ready! Type /" + (string)channel + " help for commands.");
         }
@@ -292,7 +390,22 @@ default {
             vector rezPos = llGetRootPosition() + <1, 0, 0>;
             llRezObject(walkerObject, rezPos, ZERO_VECTOR, ZERO_ROTATION, 0);
         }
-        
+
+        else if (llSubStringIndex(msg, "LINK_BEACONS:") == 0) {
+            expectedBeaconCount = (integer)llGetSubString(msg, 13, -1);
+            llOwnerSay("🔗 Starting beacon linking process for " + (string)expectedBeaconCount + " beacons...");
+
+            // Request permissions if not already granted
+            integer perms = llGetPermissions();
+            if (!(perms & PERMISSION_CHANGE_LINKS)) {
+                llOwnerSay("📋 Requesting linking permissions...");
+                llRequestPermissions(owner, PERMISSION_CHANGE_LINKS);
+            } else {
+                // Start linking immediately
+                startBeaconLinking();
+            }
+        }
+
         else if (lower == "show") {
             llSetLinkAlpha(LINK_ALL_CHILDREN, 1.0, ALL_SIDES);
             llRegionSayTo(id, 0, "👁️ Beacons visible");
@@ -342,12 +455,12 @@ default {
     
     object_rez(key id) {
         string name = llKey2Name(id);
-        
+
         if (name == hudObject) {
             // Send config to HUD
             string hudData = "hudConfig:channel=" + (string)channel + ";pathName=" + pathName;
             llRegionSayTo(id, 0, hudData);
-            
+
             // Transfer PathData if exists
             if (hudNeedsNC && llGetInventoryType("PathData") == INVENTORY_NOTECARD) {
                 llGiveInventory(id, "PathData");
@@ -355,27 +468,110 @@ default {
                 hudNeedsNC = FALSE;
             }
         }
-        
+
         else if (name == panelObject) {
             // Send config to Panel
             string panelData = "panelConfig:channel=" + (string)channel + ";pathName=" + pathName + ";access=" + (string)accessMode;
             llRegionSayTo(id, 0, panelData);
         }
-        
+
         else if (name == walkerObject) {
             // Send config to Walker
             string walkerData = "walkerConfig:channel=" + (string)channel + ";pathName=" + pathName + ";speed=" + (string)speedOverride;
             llRegionSayTo(id, 0, walkerData);
         }
     }
-    
+
+    run_time_permissions(integer perm) {
+        if (perm & PERMISSION_CHANGE_LINKS) {
+            llOwnerSay("✅ Linking permissions granted");
+            startBeaconLinking();
+        }
+    }
+
+    sensor(integer num) {
+        llOwnerSay("📡 Found " + (string)num + " objects, filtering for beacons...");
+
+        // Collect all beacons that match our path name pattern
+        integer i;
+        for (i = 0; i < num; i++) {
+            string objName = llDetectedName(i);
+            key objKey = llDetectedKey(i);
+
+            // Check if this is one of our beacons
+            if (llSubStringIndex(objName, pathName + "_") == 0) {
+                // Extract beacon number
+                list parts = llParseString2List(objName, ["_"], []);
+                integer beaconNum = (integer)llList2String(parts, -1);
+
+                // Add to list: [number, key, name]
+                beaconsToLink += [beaconNum, objKey, objName];
+            }
+        }
+
+        // Sort by beacon number (stride 3)
+        beaconsToLink = llListSort(beaconsToLink, 3, TRUE);
+
+        integer foundCount = llGetListLength(beaconsToLink) / 3;
+        llOwnerSay("✅ Found " + (string)foundCount + " beacons to link");
+
+        if (foundCount == 0) {
+            llOwnerSay("⚠️ No beacons found! Make sure they're named correctly.");
+            linkingInProgress = FALSE;
+            return;
+        }
+
+        // Start linking process with timer
+        currentLinkIndex = 0;
+        llSetTimerEvent(0.5);
+    }
+
+    no_sensor() {
+        llOwnerSay("⚠️ No objects found in range. Make sure beacons are within 96m!");
+        linkingInProgress = FALSE;
+    }
+
+    timer() {
+        if (linkingInProgress && llGetListLength(beaconsToLink) > 0) {
+            // Link one beacon at a time
+            if (currentLinkIndex < llGetListLength(beaconsToLink)) {
+                integer beaconNum = llList2Integer(beaconsToLink, currentLinkIndex);
+                key beaconKey = llList2Key(beaconsToLink, currentLinkIndex + 1);
+                string beaconName = llList2String(beaconsToLink, currentLinkIndex + 2);
+
+                llOwnerSay("🔗 Linking beacon " + (string)beaconNum + ": " + beaconName);
+                llCreateLink(beaconKey, TRUE);
+
+                currentLinkIndex += 3;
+                llSetTimerEvent(0.5); // Wait before next link
+            } else {
+                // All beacons linked!
+                llSetTimerEvent(0.0);
+                linkingInProgress = FALSE;
+                llOwnerSay("🎉 All " + (string)(llGetListLength(beaconsToLink) / 3) + " beacons linked!");
+
+                // Wait for beacon scripts to self-delete, then collect path data
+                llOwnerSay("⏳ Waiting for beacon scripts to clean up...");
+                llSetTimerEvent(2.5);
+            }
+        } else if (!linkingInProgress && llGetListLength(beaconsToLink) > 0) {
+            // Cleanup after linking - collect path data
+            beaconsToLink = [];
+            llSetTimerEvent(0.0);
+            rebuildPathData();
+        } else {
+            llSetTimerEvent(0.0);
+        }
+    }
+
     changed(integer change) {
         if (change & CHANGED_OWNER) llResetScript();
-        
+
         if (change & CHANGED_LINK) {
-            // Beacon was added/removed/moved
-            // TODO: Rebuild path data (Phase 2)
-            llOwnerSay("🔗 Link change detected - path data will auto-update (Phase 2)");
+            // Link changed - beacons added or removed
+            if (!linkingInProgress) {
+                llOwnerSay("🔗 Link change detected");
+            }
         }
     }
 }

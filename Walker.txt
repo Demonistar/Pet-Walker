@@ -1,6 +1,5 @@
-// Walker v2.0 - Mobile Unit (Phase 1 Skeleton)
-// Receives configuration, handles delete command
-// Full keyframe motion implementation in Phase 3
+// Walker v2.0 - Mobile Unit (COMPLETE)
+// Receives configuration, handles delete command, implements keyframe motion
 
 integer channel = -1;
 string pathName = "";
@@ -9,8 +8,104 @@ string forwardAxis = "Z"; // Default, read from description
 
 integer moving = FALSE;
 list waypoints = [];
+list keyframes = [];
 key followedAvatar = NULL_KEY;
 
+// ========== PATH DATA FUNCTIONS ==========
+parsePathData(string data) {
+    waypoints = [];
+    list segments = llParseString2List(data, ["|"], []);
+
+    integer i;
+    for (i = 0; i < llGetListLength(segments); i++) {
+        string seg = llList2String(segments, i);
+        list parts = llParseString2List(seg, [","], []);
+
+        if (llGetListLength(parts) == 4) {
+            float x = (float)llList2String(parts, 0);
+            float y = (float)llList2String(parts, 1);
+            float z = (float)llList2String(parts, 2);
+            float rot = (float)llList2String(parts, 3);
+
+            waypoints += [<x, y, z>, rot];
+        }
+    }
+}
+
+buildKeyframes() {
+    keyframes = [];
+    vector currentPos = llGetPos();
+    rotation currentRot = llGetRot();
+
+    integer i;
+    for (i = 0; i < llGetListLength(waypoints); i += 2) {
+        vector targetPos = llList2Vector(waypoints, i);
+        float targetRotZ = llList2Float(waypoints, i + 1);
+
+        // Calculate relative movement
+        vector relativePos = (targetPos - currentPos) / currentRot;
+        float distance = llVecMag(targetPos - currentPos);
+        float time = distance / speed;
+
+        if (time < 0.1) time = 0.1; // Minimum time
+
+        // Calculate target rotation based on forward axis
+        rotation targetRot;
+        if (forwardAxis == "X") {
+            targetRot = llEuler2Rot(<0, 0, targetRotZ - PI_BY_TWO>);
+        } else if (forwardAxis == "Y") {
+            targetRot = llEuler2Rot(<0, 0, targetRotZ>);
+        } else { // Z (default - pointing up)
+            targetRot = llEuler2Rot(<0, 0, targetRotZ>) * llEuler2Rot(<PI_BY_TWO, 0, 0>);
+        }
+
+        // Calculate relative rotation
+        rotation relativeRot = targetRot / currentRot;
+
+        // Add keyframe: [position_offset, rotation, time]
+        keyframes += [relativePos, relativeRot, time];
+
+        // Update for next iteration
+        currentPos = targetPos;
+        currentRot = targetRot;
+    }
+}
+
+// ========== MOVEMENT FUNCTIONS ==========
+startMovement() {
+    buildKeyframes();
+
+    if (llGetListLength(keyframes) == 0) {
+        llRegionSayTo(llGetOwner(), 0, "⚠️ Cannot build keyframes - check path data");
+        return;
+    }
+
+    llSetKeyframedMotion(keyframes, [
+        KFM_DATA, KFM_TRANSLATION | KFM_ROTATION,
+        KFM_MODE, KFM_LOOP
+    ]);
+
+    llRegionSayTo(llGetOwner(), 0, "▶️ Walker moving on path loop");
+}
+
+stopMovement() {
+    llSetKeyframedMotion([], [KFM_COMMAND, KFM_CMD_STOP]);
+    llRegionSayTo(llGetOwner(), 0, "⏸️ Walker stopped");
+}
+
+returnHome() {
+    llSetKeyframedMotion([], [KFM_COMMAND, KFM_CMD_STOP]);
+
+    if (llGetListLength(waypoints) > 0) {
+        vector homePos = llList2Vector(waypoints, 0);
+        llSetRegionPos(homePos);
+        llRegionSayTo(llGetOwner(), 0, "🏠 Walker returned to waypoint 1");
+    } else {
+        llRegionSayTo(llGetOwner(), 0, "⚠️ No home position - no path data!");
+    }
+}
+
+// ========== DEFAULT STATE ==========
 default {
     state_entry() {
         // Read forward axis from description
@@ -53,26 +148,49 @@ default {
         // Main commands
         if (chan == channel) {
             string lower = llToLower(msg);
-            
-            if (lower == "start") {
-                llRegionSayTo(llGetOwner(), 0, "▶️ Walker starting... (Phase 3: full motion)");
-                moving = TRUE;
+
+            // Path data from Core
+            if (llSubStringIndex(msg, "pathUpdate:") == 0) {
+                string pathData = llGetSubString(msg, 11, -1);
+                parsePathData(pathData);
+                llRegionSayTo(llGetOwner(), 0, "✅ Path received: " + (string)(llGetListLength(waypoints)/2) + " waypoints");
             }
-            
+
+            else if (lower == "start") {
+                if (llGetListLength(waypoints) == 0) {
+                    llRegionSayTo(llGetOwner(), 0, "⚠️ No path data - cannot start. Link beacons first!");
+                    return;
+                }
+
+                if (!moving) {
+                    startMovement();
+                    moving = TRUE;
+                }
+            }
+
             else if (lower == "stop") {
-                llRegionSayTo(llGetOwner(), 0, "⏸️ Walker stopped");
+                if (moving) {
+                    stopMovement();
+                    moving = FALSE;
+                }
+                followedAvatar = NULL_KEY;
+            }
+
+            else if (lower == "home") {
+                returnHome();
                 moving = FALSE;
                 followedAvatar = NULL_KEY;
             }
-            
-            else if (lower == "home") {
-                llRegionSayTo(llGetOwner(), 0, "🏠 Walker returning home... (Phase 3: full motion)");
-                followedAvatar = NULL_KEY;
-            }
-            
+
             else if (llSubStringIndex(msg, "speedUpdate:") == 0) {
                 speed = (float)llGetSubString(msg, 12, -1);
                 llRegionSayTo(llGetOwner(), 0, "🚀 Walker speed updated: " + (string)speed + " m/s");
+
+                // If moving, restart with new speed
+                if (moving && llGetListLength(waypoints) > 0) {
+                    stopMovement();
+                    startMovement();
+                }
             }
             
             // Component delete command

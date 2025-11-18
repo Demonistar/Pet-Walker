@@ -50,6 +50,24 @@ default {
     }
     
     changed(integer change) {
+        if (change & CHANGED_LINK) {
+            // We've been linked to Core!
+            llSetLinkPrimitiveParamsFast(LINK_THIS, [
+                PRIM_GLOW, ALL_SIDES, 0.2,
+                PRIM_COLOR, ALL_SIDES, <0,1,0>, 1.0
+            ]);
+
+            llOwnerSay("✅ Beacon " + (string)beaconNum + " linked - script self-destructing");
+
+            // Clean up
+            if (listenHandle) llListenRemove(listenHandle);
+            llSetTimerEvent(0.0);
+
+            // Wait a moment then self-delete
+            llSleep(0.5);
+            llRemoveInventory(llGetScriptName());
+        }
+
         if (change & CHANGED_OWNER) llResetScript();
     }
 }

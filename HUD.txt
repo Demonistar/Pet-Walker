@@ -85,6 +85,10 @@ default {
         else if (linkName == "btn_finish" && placementActive) {
             placementActive = FALSE;
             llRegionSayTo(owner, 0, "Placement finished. " + (string)beaconCount + " beacons placed.");
+
+            // NEW: Tell Core to link all beacons
+            llRegionSay(channel, "LINK_BEACONS:" + (string)beaconCount);
+            llRegionSayTo(owner, 0, "🔗 Requesting beacon linking...");
         }
     }
     
