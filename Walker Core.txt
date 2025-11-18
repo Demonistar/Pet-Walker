@@ -291,7 +291,20 @@ default {
         } else {
             // Existing Core being re-rezzed - load saved data
             loadLinkSetData();
-            llOwnerSay("🔄 Core loaded: Channel /" + (string)channel + ", Path: " + pathName);
+
+            // Check if this is a standalone core (no beacons linked)
+            integer linkCount = llGetNumberOfPrims();
+
+            if (linkCount == 1) {
+                // No beacons linked - might be starting fresh
+                llOwnerSay("🔄 Core has saved data but no beacons linked.");
+                llOwnerSay("📋 Path: " + pathName + " | Channel: /" + (string)channel);
+                llOwnerSay("💡 To start fresh, say: /" + (string)channel + " reset");
+                llOwnerSay("💡 To use this path, say: /" + (string)channel + " rez hud");
+            } else {
+                llOwnerSay("🔄 Core loaded: Channel /" + (string)channel + ", Path: " + pathName);
+                llOwnerSay("📊 Beacons linked: " + (string)(linkCount - 1));
+            }
 
             // Check for PathData notecard
             if (llGetInventoryType("PathData") == INVENTORY_NOTECARD) {
